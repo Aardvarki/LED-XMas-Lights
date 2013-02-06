@@ -1,5 +1,5 @@
 #include <Lite.h>
-#include <EEPROM.h>
+#include "Arduino.h"
 
 // Pin definitions
 #define LITE_PIN_ONE 8
@@ -10,20 +10,16 @@
 // Counter definitions: light count, program count, mode count
 #define NUMLITES 50
 #define NUMPROGRAMS 5
-const byte NUMMODES[NUMPROGRAMS+1] = {0,8,3,10,3,12};
+const byte NUMMODES[NUMPROGRAMS+1] = {0,8,3,10,6,12};
 
 #define wrap(vr,mx) ((vr+mx)%mx)
-
-// Memory location definition, 0x0 through 0x3FF are valid
-#define PROGMEM 0x0
 
 // Global variable definitions
 volatile int program;
 volatile int mode;
 volatile boolean update;
 byte stats[NUMLITES][3]; 
-byte bright;
-Lite lites;
+Lite lites(NUMLITES);
 
 void setup()
 {
@@ -32,28 +28,15 @@ void setup()
 	tone(SOUND_PIN,400);
 	delay(2000);        
 	noTone(SOUND_PIN);
-	lites.init(LITE_PIN_ONE,NUMLITES);
+	lites.mix(LITE_PIN_ONE);
 	lites.mix(LITE_PIN_TWO);
+	lites.init();
 	attachInterrupt(0,green,RISING);
 	attachInterrupt(1,red,RISING);
-	program = EEPROM.read(PROGMEM);
-	if (program > NUMPROGRAMS)
-	{
-		program=1;
-		EEPROM.write(PROGMEM,program);
-	}
-	mode = EEPROM.read(program);
-	if (mode > NUMMODES[program])
-	{
-		mode=1;
-		EEPROM.write(program,mode);
-	}
 }
 
 void loop()
 {
-	//bright = map(analogRead(BRIGHTNESS),512,1023,0,204);
-	//lites.set_intensity(bright);	
 	switch(program){
 		case 1: pgm_Constant(); break;
 		case 2: pgm_Random(); break;
@@ -80,7 +63,10 @@ void pgm_Constant()
 
 void pgm_Random()
 {
-	byte w, x, y, z;
+	byte w, x, y, z;	//x determines chance - x-1/x chance of action
+						//w determines baseline, if x returns no action, w is the baseline
+						//y determines random value for action (used as random(y))
+						//z determines flat value for action 
 	switch(mode){
 			case 1: update=false; w=0; x=3; y=16; z=0; break; // 1/3 off, 2/3 random
 			case 2: update=false;  w=15; x=10; y=16; z=0;break; // 90% random, 10% 15
@@ -120,9 +106,9 @@ void pgm_Rainbow()
 			last = wrap(last + ((mode+1)/2), 90);
 			for(int x=0;x<NUMLITES;x++)
 			{
-                            stats[x][0] = last + ((mode+1)/2);
-                            last = wrap(last + ((mode+1)/2), 90);
-                        }
+				stats[x][0] = last + ((mode+1)/2);
+				last = wrap(last + ((mode+1)/2), 90);
+			}
 		}
 	}
 	for(byte y=0;y<NUMLITES;y++)
@@ -130,60 +116,24 @@ void pgm_Rainbow()
 		stats[y][0] = wrap(stats[y][0]+((mode+1)/2), 90);
 		hue(stats[y][0], y);
 	}
-		
-		
-	
-		
-}
-
-void green()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
-  // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 150)
-  {
-		tone(SOUND_PIN,2000,60);
-		if(++mode > NUMMODES[program])
-			mode=1;
-		update = true;
-	}
-  last_interrupt_time = interrupt_time;	
-}
-
-void red()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
-  // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 150)
-  {
-		tone(SOUND_PIN,1000,60);
-		if(++program > NUMPROGRAMS)
-			program = 1;
-		mode = EEPROM.read(program);
-		if (mode > NUMMODES[program])
-		{
-			mode=1;
-			EEPROM.write(program,mode);
-		}
-		update = true;
-  }
-  last_interrupt_time = interrupt_time;	
 }
 
 void pgm_Fade()
 {
 	int pos[3];
 	int dir[3];
-	int cap, bounce;
+	int cap, bounce, fade;
 	boolean sub;
 	if(update)
 	{
+		update = false;
 		switch(mode){
-			case 1: cap = 15; bounce=0; sub=false; break;
-			case 2: cap = 15; bounce=10; sub=false; break;
-			case 3: cap = 15; bounce=2; sub=false; break;
+			case 1: cap = 15; bounce=0; fade = 1; sub=false; break;
+			case 2: cap = 15; bounce=10; fade = 1; sub=false; break;
+			case 3: cap = 15; bounce=2; fade = 1; sub=false; break;
+			case 4: cap = 15; bounce=0; fade = 1; sub=true; break;
+			case 5: cap = 15; bounce=10; fade = 1; sub=true; break;
+			case 6: cap = 15; bounce=2; fade = 1; sub=true; break;
 	
 		}
 		for(int x=0;x<NUMLITES;x++)
@@ -202,8 +152,7 @@ void pgm_Fade()
 	 	int bot = min(min(stats[x][0],stats[x][1]),stats[x][2]);
 	 	if(top<=1) continue;
 	 	for(int y=0;y<3;y++)	
-	 		if(stats[x][y]) 
-	 			stats[x][y]--;
+	 		stats[x][y] = constrain(int(stats[x][y]) - fade,0,cap);
 	 	if(sub)
 	 		lites.set_color(x,15-stats[x][0],15-stats[x][1],15-stats[x][2]);
 	 	else{
@@ -218,7 +167,7 @@ void pgm_Fade()
 		pos[y] = wrap(pos[y]+dir[y],NUMLITES);
 		if((pos[y] == 0 || pos[y] == (NUMLITES-1)) && !random(bounce))
 			dir[y]*=-1;
-		stats[dir[y]][y]=cap;
+		stats[pos[y]][y]=cap;
 		if (y==0)	lites.set_color(pos[y],15,0,0);
 		if (y==1)	lites.set_color(pos[y],0,15,0);
 		if (y==2)	lites.set_color(pos[y],0,0,15);
@@ -247,8 +196,9 @@ void pgm_Fire()
 	{
 		update=false;
 		for(int x=0;x<NUMLITES;x++)
-				stats[x][0]=min;
-		for(int x=0;x<10;x++) lites.fill_color(min,0,0);
+			stats[x][0]=min;
+		for(int x=0;x<10;x++) 
+			mode>6?lites.fill_color(min,0,0):lites.fill_color(0,0,min);
 	}
 	
 	for(int x=0;x<NUMLITES;x++)
@@ -257,10 +207,10 @@ void pgm_Fire()
 		if(random(avg)+random(avg)+3>=stats[y][0])		
 		{
 			stats[y][0]+=random(avg);
-			stats[constrain(y-1,0,49)][0]++;
-			stats[constrain(y+1,0,49)][0]++;
+			stats[wrap(y-1,NUMLITES)][0]++;
+			stats[wrap(y+1,NUMLITES)][0]++;
 		}else{
-			stats[y][0]-=(random(avg)/2);
+			stats[y][0] = constrain(stats[y][0] - (random(avg)/2),0,45);
 		}
 		if(mode>6)
 			lites.set_color(y,constrain(stats[y][0],min,15),constrain(int(stats[y][0])-15,0,15),constrain(int(stats[y][0])-30,0,15));	
@@ -269,4 +219,35 @@ void pgm_Fire()
 	}
 }	
 	
-	
+void green()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200)
+  {
+		tone(SOUND_PIN,2000,60);
+		if(++mode > NUMMODES[program])
+			mode=1;
+		update = true;
+	}
+  last_interrupt_time = interrupt_time;	
+}
+
+void red()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200)
+  {
+		tone(SOUND_PIN,1000,60);
+		if(++program > NUMPROGRAMS)
+		{
+			program = 1;
+			mode = 1;
+		}
+		update = true;
+  }
+  last_interrupt_time = interrupt_time;	
+}	
