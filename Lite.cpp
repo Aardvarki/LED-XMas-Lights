@@ -74,12 +74,6 @@ void Lite::packetend()
 void Lite::set_color(byte n, int r, int g, int b)
 {
 	byte intensity = _intensity;
-	if(n<_count)
-	{
-		state[n][0] = r;
-		state[n][1] = g;
-		state[n][2] = b;
-	}
 	int color = (b<<8) + (g<<4) + r;
 	int i;
 	packetstart();  
